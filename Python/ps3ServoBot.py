@@ -7,8 +7,12 @@ import os
 import sys
 import wiringpi as wiringpi
 
+# Set the GPIO modes
+GPIO.setmode(GPIO.BCM)
+GPIO.setwarnings(False)
+
 # Define the PWM pins (these are fixed!)
-PWM_PIN1 = 18
+PWM_PIN1 = 12
 PWM_PIN2 = 19
 
 # Define the left-right speed balance
@@ -18,10 +22,18 @@ BAL_Right = 1.0
 # Define the initial Duty-Cycle for forwards & backwards
 DC_forwards = 11
 DC_backwards = 20
+DC_right = 17
+DC_left = 13
 DC_Stop = 15
+TurnDC = 1
+
+# Define a global variable to control limit initial acceleration
+SpeedRamp = 0.5
 
 # Set variables for the line detector GPIO pin
 pinLineFollower = 25
+
+JoystickFound = False
 
 # pygame controller constants
 JoyButton_Square = 0
@@ -106,7 +118,6 @@ os.environ["SDL_VIDEODRIVER"]= "dummy"
 #Initialise pygame & controller(s)
 pygame.init()
 print 'Waiting for joystick... (press CTRL+C to abort)'
-timeoutCount = 100
 while True:
     try:
         try:
@@ -119,52 +130,41 @@ while True:
                 time.sleep(0.1)
             else:
                 # We have a joystick, attempt to initialise it!
-                JoystickFound = False
                 joystick = pygame.joystick.Joystick(0)
                 break
         except pygame.error:
-            # Failed to connect to the joystick
+            # Failed to connect to the joystick, toggle the LED
             pygame.joystick.quit()
             time.sleep(0.1)
-        
-        if timeoutCount < 1:
-            print 'Cannot find joystick'
-            JoystickFound = False
-            break
-        else:
-            timeoutCount = timeoutCount - 1
-            
     except KeyboardInterrupt:
         # CTRL+C exit, give up
         print '\nUser aborted'
         #ZB.SetLed(True)
         sys.exit()
+print 'Joystick found'
+joystick.init()
 
-if JoystickFound == True:
-    print 'Joystick found'
-    joystick.init()
+print 'Initialised Joystick : %s' % joystick.get_name()
 
-    print 'Initialised Joystick : %s' % joystick.get_name()
+# Check number of joysticks in use...
+joystick_count = pygame.joystick.get_count()
+print("joystick_count")
+print(joystick_count)
+print("--------------")
 
-    # Check number of joysticks in use...
-    joystick_count = pygame.joystick.get_count()
-    print("joystick_count")
-    print(joystick_count)
-    print("--------------")
+# Check number of axes on joystick...
+numaxes = joystick.get_numaxes()
+print("numaxes")
+print(numaxes)
+print("--------------")
 
-    # Check number of axes on joystick...
-    numaxes = joystick.get_numaxes()
-    print("numaxes")
-    print(numaxes)
-    print("--------------")
+# Check number of buttons on joystick...
+numbuttons = joystick.get_numbuttons()
+print("numbuttons")
+print(numbuttons)
 
-    # Check number of buttons on joystick...
-    numbuttons = joystick.get_numbuttons()
-    print("numbuttons")
-    print(numbuttons)
-
-    # Pause for a moment...
-    time.sleep(2)
+# Pause for a moment...
+time.sleep(2)
 
 
 # Turn all motors off
@@ -183,10 +183,23 @@ def Forwards():
     wiringpi.pwmWrite(PWM_PIN2,DC_backwards)
 
 # Turn Right
-def Right():
-    wiringpi.pwmWrite(PWM_PIN1,DC_forwards)
-    wiringpi.pwmWrite(PWM_PIN2,DC_forwards)
+def BRight():
+    global TurnDC
+    
+    wiringpi.pwmWrite(PWM_PIN1,DC_forwards * TurnDC)
+    wiringpi.pwmWrite(PWM_PIN2,DC_backwards)
 
+def FRight():
+    global TurnDC
+    
+    wiringpi.pwmWrite(PWM_PIN1,DC_forwards * TurnDC)
+    wiringpi.pwmWrite(PWM_PIN2,DC_backwards)
+
+def Right():
+    wiringpi.pwmWrite(PWM_PIN1,DC_right)
+    wiringpi.pwmWrite(PWM_PIN2,DC_right)
+
+# Turn left
 def BLeft():
     global TurnDC
     
@@ -199,22 +212,9 @@ def FLeft():
     wiringpi.pwmWrite(PWM_PIN1,DC_backwards * TurnDC)
     wiringpi.pwmWrite(PWM_PIN2,DC_forwards)
 
-# Turn left
 def Left():
-    wiringpi.pwmWrite(PWM_PIN1,DC_backwards)
-    wiringpi.pwmWrite(PWM_PIN2,DC_backwards)
-
-def BRight():
-    global TurnDC
-    
-    wiringpi.pwmWrite(PWM_PIN1,DC_forwards * TurnDC)
-    wiringpi.pwmWrite(PWM_PIN2,DC_backwards)
-
-def FRight():
-    global TurnDC
-    
-    wiringpi.pwmWrite(PWM_PIN1,DC_forwards)
-    wiringpi.pwmWrite(PWM_PIN2,DC_backwards * TurnDC)
+    wiringpi.pwmWrite(PWM_PIN1,DC_left)
+    wiringpi.pwmWrite(PWM_PIN2,DC_left)
 
 # Return True if the line detector is over a black line
 def IsOverBlack():
@@ -260,9 +260,6 @@ def SeekLine():
                 
         # The robot has not found the black line yet, so stop
         StopMotors()
-        # Turn the LED off
-        GPIO.output(pinLED1, False)
-
         
         # Increase the seek count
         SeekCount += 1
@@ -477,11 +474,14 @@ try:
     wiringpi.pwmWrite(PWM_PIN1,0)
     wiringpi.pwmWrite(PWM_PIN2,0)
             
+    # Set the pinLineFollower pin as an input so its value can be read
+    GPIO.setup(pinLineFollower, GPIO.IN)
+
     # Allow module to settle
     time.sleep(0.5)    
 
     # Loop indefinitely
-    while JoystickFound:
+    while True:
         # Get the currently pressed keys on the keyboard
         PygameHandler(pygame.event.get())
         if hadEvent:
@@ -496,15 +496,16 @@ try:
                 os.system(bashCommand)
                 break
             elif HomeButton and XButton: # Exit
+                print ("Ending program...")
                 break
             elif StartButton and CircleButton: 
                 print ("Start Line-follower")
                 do_linefollower()
             elif StartButton and SquareButton: 
-                print ("Start Proximity")
+                print ("Start Proximity (DISABLED)")
                 #do_proximity()
             elif StartButton and XButton: 
-                print ("Start Avoidance")
+                print ("Start Avoidance (DISABLED)")
                 #do_proximity()
             elif SelectButton:
                 print ("Select")
@@ -556,11 +557,8 @@ try:
                 StopMotors()
         time.sleep(interval)
     # Disable all drives
-    if JoystickFound == False:
-        print ("Start Line-follower")
-        do_linefollower()
-    
     StopMotors()    
+
 # If you press CTRL+C, cleanup and stop
 except KeyboardInterrupt:
     # Reset GPIO settings
